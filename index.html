@@ -1999,6 +1999,10 @@ function getAppConfig(appName) {
 }
 
 function getAccountApp(account) {
+  if (account.app_id) {
+    const byId = customApps.find(a => a.id === account.app_id);
+    if (byId) return byId.name;
+  }
   if (account.app && account.app.trim()) return account.app.trim();
   const nameLower = (account.name || '').toLowerCase();
   for (const item of customApps) {
@@ -4467,4 +4471,5 @@ function spawnSparkles(x, y) {
 </script>
 </body>
 </html>
+
 
