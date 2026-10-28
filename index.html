@@ -25,6 +25,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Itim&family=Kanit:wght@300;400;500;600;700&family=Prompt:wght@300;400;500;600;700&family=Mali:wght@400;500;600;700&display=swap" rel="stylesheet">
 <!-- Chart.js สำหรับทำกราฟระบบบัญชี -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script>
 tailwind.config = {
   theme: {
@@ -1471,6 +1472,7 @@ function generateId() {
 
 function saveToLocal(key, data) {
   localStorage.setItem(key, JSON.stringify(data));
+  queueCloudSave(key, data);
 }
 
 function getFromLocal(key, defaultValue = '[]') {
@@ -1486,6 +1488,91 @@ function saveSettingsValue(key, value) {
   stMap[key] = value;
   saveToLocal(STORAGE_KEY.SET, stMap);
 }
+
+// --- SUPABASE SYNC ---
+const SUPABASE_URL = 'https://dlepafxydlugwkilbqbo.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRsZXBhZnh5ZGx1Z3draWxicWJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA3MzA5NzQsImV4cCI6MjEwNjMwNjk3NH0.wOyXhfs9ZqEOiSUD1HRQSvkq1gZBVbcLWRMMhkClrmU';
+const SUPABASE_ADMIN_ID = '7882e438-fad7-40c2-9039-3eee3ee5fe82';
+let sb = null;
+const cloudTimers = {};
+let cloudErrorShown = false;
+
+function cloudReady() {
+  return !!(sb && currentAdmin && currentAdmin.cloud);
+}
+
+function queueCloudSave(key, data) {
+  if (!cloudReady()) return;
+  clearTimeout(cloudTimers[key]);
+  cloudTimers[key] = setTimeout(async () => {
+    try {
+      let value = data;
+      if (key === STORAGE_KEY.SET && data && typeof data === 'object') {
+        value = { ...data };
+        delete value.admin_pass;
+      }
+      const { error } = await sb.from('app_data').upsert({ key: key, value: value, updated_at: new Date().toISOString() });
+      if (error) throw error;
+      cloudErrorShown = false;
+    } catch (e) {
+      console.error('Supabase sync error:', e);
+      if (!cloudErrorShown) {
+        cloudErrorShown = true;
+        showToast('ซิงก์ Supabase ไม่สำเร็จ: ' + (e.message || e) + ' ❌');
+      }
+    }
+  }, 800);
+}
+
+async function pullFromCloud() {
+  const { data, error } = await sb.from('app_data').select('key,value');
+  if (error) throw error;
+  const map = {};
+  (data || []).forEach(r => { map[r.key] = r.value; });
+  for (const key of Object.values(STORAGE_KEY)) {
+    if (map[key] !== undefined && map[key] !== null) {
+      let v = map[key];
+      if (key === STORAGE_KEY.SET) {
+        const local = getFromLocal(key, '{}');
+        v = { ...v };
+        if (local.admin_pass) v.admin_pass = local.admin_pass;
+      }
+      localStorage.setItem(key, JSON.stringify(v));
+    } else {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        try {
+          const lv = JSON.parse(raw);
+          const hasData = Array.isArray(lv) ? lv.length > 0 : (lv && Object.keys(lv).length > 0);
+          if (hasData) queueCloudSave(key, lv);
+        } catch (e) {}
+      }
+    }
+  }
+}
+
+async function initSupabase() {
+  try {
+    if (!window.supabase || !SUPABASE_URL) return;
+    sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const { data } = await sb.auth.getSession();
+    const user = data && data.session && data.session.user;
+    const remembered = localStorage.getItem('monali_remember_device') === 'true';
+    if (user && user.id === SUPABASE_ADMIN_ID && remembered) {
+      currentAdmin = { email: user.email, cloud: true };
+      await pullFromCloud();
+    } else {
+      currentAdmin = null;
+      if (user) await sb.auth.signOut();
+    }
+    updateAdminStateUI();
+    checkAdminPermissionsUI();
+  } catch (e) {
+    console.error('Supabase init error:', e);
+  }
+}
+// ---------------------------
+
 // ---------------------------
 
 let netflixAccounts = [];
@@ -1638,6 +1725,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   initClickSparkles();
   checkAutoLoginSession();
   checkLicense();
+  await initSupabase();
   
   await loadData();
 
@@ -3477,13 +3565,23 @@ async function handleAdminLogin(e) {
     // จำลองการโหลด
     await new Promise(r => setTimeout(r, 600));
 
-    const stMap = getFromLocal(STORAGE_KEY.SET, '{}');
-    const correctPass = stMap['admin_pass'] || '1234';
-
     if (!email || !pass) throw new Error('กรุณากรอกข้อมูลให้ครบถ้วน');
-    if (pass !== correctPass) throw new Error('รหัสผ่านไม่ถูกต้อง');
 
-    currentAdmin = { email: email };
+    if (sb) {
+      const { data, error } = await sb.auth.signInWithPassword({ email: email, password: pass });
+      if (error) throw new Error(error.message === 'Invalid login credentials' ? 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' : error.message);
+      if (!data.user || data.user.id !== SUPABASE_ADMIN_ID) {
+        await sb.auth.signOut();
+        throw new Error('บัญชีนี้ไม่มีสิทธิ์แอดมิน');
+      }
+      currentAdmin = { email: data.user.email, cloud: true };
+      await pullFromCloud();
+    } else {
+      const stMap = getFromLocal(STORAGE_KEY.SET, '{}');
+      const correctPass = stMap['admin_pass'] || '1234';
+      if (pass !== correctPass) throw new Error('รหัสผ่านไม่ถูกต้อง');
+      currentAdmin = { email: email };
+    }
     
     if (isRemember) {
       localStorage.setItem('monali_remember_device', 'true');
@@ -3497,7 +3595,7 @@ async function handleAdminLogin(e) {
     document.getElementById('loginAdminPassword').value = '';
     updateAdminStateUI();
     checkAdminPermissionsUI();
-    showToast(isRemember ? 'เข้าสู่ระบบออฟไลน์แล้ว ✨' : 'ยินดีต้อนรับเข้าสู่ระบบ ✨');
+    showToast(sb ? 'เข้าสู่ระบบและเชื่อมต่อ Supabase แล้ว ☁️' : (isRemember ? 'เข้าสู่ระบบออฟไลน์แล้ว ✨' : 'ยินดีต้อนรับเข้าสู่ระบบ ✨'));
     closeAdminModal();
 
     // เช็คหากทำการปลดล็อกจากหน้าหมดอายุ ให้เปิดหน้าต่างต่ออายุอัตโนมัติ
@@ -3516,6 +3614,7 @@ async function handleAdminLogin(e) {
 }
 
 async function logoutAdmin() {
+  if (sb) { try { await sb.auth.signOut(); } catch (e) {} }
   localStorage.removeItem('monali_remember_device');
   localStorage.removeItem('monali_admin_email');
   currentAdmin = null;
@@ -4368,3 +4467,4 @@ function spawnSparkles(x, y) {
 </script>
 </body>
 </html>
+
