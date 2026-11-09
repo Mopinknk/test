@@ -383,7 +383,7 @@
 </template>
     <script>
         // ใส่เนื้อหาหน้าเว็บด้วย JS เพื่อไม่ให้ตัวสร้างพรีวิวลิงก์ (LINE ฯลฯ) อ่านข้อความได้
-        document.title = "Mew Mew | แคตตาล็อกสินค้า";
+        document.title = "Mew Mew";
         (function(){ const t = document.getElementById("app-tpl"); document.body.insertBefore(t.content, t); })();
         // --- State ---
         const state = {
@@ -550,6 +550,7 @@
 
         function renderHome() {
             document.getElementById('home-shop-name').textContent = state.shop.name;
+            document.title = state.shop.name || 'Mew Mew';
             document.getElementById('home-shop-desc').innerHTML = state.shop.desc.replace(/\n/g, '<br>');
             document.getElementById('home-link-line').href = state.shop.line;
             document.getElementById('home-link-ig').href = state.shop.ig;
