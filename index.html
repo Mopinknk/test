@@ -6,6 +6,7 @@
     <title>Mew Mew | แคตตาล็อกสินค้า</title>
     
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Mitr:wght@300;400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
@@ -201,7 +202,8 @@
                         <i class="fas fa-lock"></i>
                     </div>
                     <h2 class="text-lg font-medium text-textDark mb-6">ระบบหลังบ้าน</h2>
-                    <input type="password" id="admin-password" placeholder="รหัสผ่านแอดมิน" class="w-full bg-cloudBg border border-blush rounded-2xl px-4 py-3 mb-4 text-center text-sm outline-none focus:border-softPink transition-colors">
+                    <input type="email" id="admin-email" placeholder="อีเมลแอดมิน" autocomplete="username" class="w-full bg-cloudBg border border-blush rounded-2xl px-4 py-3 mb-3 text-center text-sm outline-none focus:border-softPink transition-colors">
+                    <input type="password" id="admin-password" placeholder="รหัสผ่านแอดมิน" autocomplete="current-password" onkeydown="if(event.key==='Enter')loginAdmin()" class="w-full bg-cloudBg border border-blush rounded-2xl px-4 py-3 mb-4 text-center text-sm outline-none focus:border-softPink transition-colors">
                     <button onclick="loginAdmin()" class="w-full bg-softPink text-white rounded-2xl py-3 text-sm font-medium hover:bg-opacity-90 transition-all shadow-sm">เข้าสู่ระบบ</button>
                 </div>
             </div>
@@ -416,6 +418,82 @@
             isAdminAuth: false
         };
 
+        // --- Supabase ---
+        const SUPABASE_URL = "https://mnotajkgzfawnkzmxqlm.supabase.co";
+        const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1ub3RhamtnemZhd25rem14cWxtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQyMTE2MTksImV4cCI6MjEwOTc4NzYxOX0.eWRcEUYNAqxa1oJuqJAlPzb32Fs5yvjASRjJR-9npHY";
+        const BUCKET = 'shop-images';
+        const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        // รัน query แล้วโยน error ถ้าล้มเหลว
+        async function q(promise) {
+            const { data, error } = await promise;
+            if (error) throw error;
+            return data;
+        }
+
+        async function loadAll() {
+            try {
+                const [shop, cats, apps, reviews, faqs] = await Promise.all([
+                    q(sb.from('shop_settings').select('*').eq('id', 1).maybeSingle()),
+                    q(sb.from('categories').select('name').order('sort_order').order('id')),
+                    q(sb.from('apps_with_packages').select('*').order('sort_order').order('id')),
+                    q(sb.from('reviews').select('*').order('created_at', { ascending: false })),
+                    q(sb.from('faqs').select('*').order('sort_order').order('id'))
+                ]);
+                if (shop) {
+                    state.shop = {
+                        name: shop.name, desc: shop.description,
+                        line: shop.line_url || '#', ig: shop.ig_url || '#',
+                        coverImage: shop.cover_image, updateNote: shop.update_note,
+                        updateImage: shop.update_image,
+                        steps: (Array.isArray(shop.steps) && shop.steps.length === 3) ? shop.steps : state.shop.steps
+                    };
+                }
+                state.categories = ['ทั้งหมด', ...cats.map(c => c.name)];
+                state.apps = apps.map(a => ({ id: a.id, name: a.name, category: a.category || 'ทั่วไป', img: a.img, packages: a.packages }));
+                state.reviews = reviews.map(r => ({ id: r.id, img: r.img }));
+                state.faqs = faqs.map(f => ({ id: f.id, q: f.question, a: f.answer }));
+            } catch (err) {
+                console.error('โหลดข้อมูลจาก Supabase ไม่สำเร็จ', err);
+                showToast('โหลดข้อมูลไม่สำเร็จ ใช้ข้อมูลตัวอย่างแทน');
+            }
+            renderApp();
+        }
+
+        function fail(err) { console.error(err); showToast('เกิดข้อผิดพลาด: ' + (err.message || err)); }
+
+        // อัปโหลดรูป (Blob) ไป Storage แล้วคืน public URL
+        async function uploadImage(blob, folder, ext) {
+            const path = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+            const { error } = await sb.storage.from(BUCKET).upload(path, blob, { contentType: blob.type, cacheControl: '31536000' });
+            if (error) throw error;
+            return sb.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
+        }
+        // ย่อรูปด้วย canvas → Blob
+        function resizeToBlob(file, max, mime, quality) {
+            return new Promise((resolve, reject) => {
+                const r = new FileReader();
+                r.onerror = reject;
+                r.onload = ev => {
+                    const img = new Image();
+                    img.onerror = reject;
+                    img.onload = () => {
+                        let w = img.width, h = img.height;
+                        if (w > h && w > max) { h *= max / w; w = max; } else if (h > max) { w *= max / h; h = max; }
+                        const c = document.createElement('canvas'); c.width = w; c.height = h;
+                        c.getContext('2d').drawImage(img, 0, 0, w, h);
+                        c.toBlob(b => b ? resolve(b) : reject(new Error('แปลงรูปไม่สำเร็จ')), mime, quality);
+                    };
+                    img.src = ev.target.result;
+                };
+                r.readAsDataURL(file);
+            });
+        }
+        async function uploadResized(file, folder, max, mime, quality) {
+            const blob = await resizeToBlob(file, max, mime, quality);
+            return uploadImage(blob, folder, mime === 'image/png' ? 'png' : 'jpg');
+        }
+
         // --- Core Functions ---
         let toastTimeout;
         function showToast(msg) {
@@ -572,19 +650,25 @@
         document.getElementById('search-input').addEventListener('input', (e) => { state.searchQuery = e.target.value; renderMenu(); });
 
         // --- ระบบ Admin ---
-        function loginAdmin() {
-            if(document.getElementById('admin-password').value === 'admin') {
-                state.isAdminAuth = true; 
-                switchAdminTab('shop', document.querySelector('.admin-tab-btn')); // บังคับรีเซ็ตกลับหน้าแรกของ admin 
-                navigate('admin'); 
-                renderAdmin();
-                document.getElementById('admin-password').value = '';
-                showToast('เข้าสู่ระบบสำเร็จ 🤍');
-            } else {
-                showToast('รหัสผ่านไม่ถูกต้อง');
-            }
+        async function loginAdmin() {
+            const email = document.getElementById('admin-email').value.trim();
+            const password = document.getElementById('admin-password').value;
+            if (!email || !password) { showToast('กรอกอีเมลและรหัสผ่านก่อนนะคะ'); return; }
+            const { error } = await sb.auth.signInWithPassword({ email, password });
+            if (error) { showToast('อีเมลหรือรหัสผ่านไม่ถูกต้อง'); return; }
+            const { data: ok } = await sb.rpc('is_admin');
+            if (!ok) { await sb.auth.signOut(); showToast('บัญชีนี้ไม่มีสิทธิ์แอดมิน'); return; }
+            enterAdmin();
+            document.getElementById('admin-password').value = '';
+            showToast('เข้าสู่ระบบสำเร็จ 🤍');
         }
-        function logoutAdmin() { state.isAdminAuth = false; navigate('home'); showToast('ออกจากระบบแล้ว'); }
+        function enterAdmin() {
+            state.isAdminAuth = true;
+            switchAdminTab('shop', document.querySelector('.admin-tab-btn'));
+            navigate('admin');
+            renderAdmin();
+        }
+        async function logoutAdmin() { await sb.auth.signOut(); state.isAdminAuth = false; navigate('home'); showToast('ออกจากระบบแล้ว'); }
 
         function switchAdminTab(tabName, btn = null) {
             document.querySelectorAll('.admin-panel').forEach(p => p.classList.add('hidden'));
@@ -647,23 +731,29 @@
             `).join('');
         }
 
-        function saveShopInfo() {
-            state.shop.name = document.getElementById('edit-shop-name').value;
-            state.shop.desc = document.getElementById('edit-shop-desc').value;
-            state.shop.line = document.getElementById('edit-shop-line').value;
-            state.shop.ig = document.getElementById('edit-shop-ig').value;
-            
-            state.shop.coverImage = document.getElementById('edit-shop-cover').value;
-            state.shop.updateNote = document.getElementById('edit-shop-update-note').value;
-            state.shop.updateImage = document.getElementById('edit-shop-update-img').value;
-
-            state.shop.steps = [
-                document.getElementById('edit-step-1').value,
-                document.getElementById('edit-step-2').value,
-                document.getElementById('edit-step-3').value
-            ];
-
-            renderApp(); showToast('บันทึกข้อมูลร้านแล้ว 🤍');
+        async function saveShopInfo() {
+            const shop = {
+                name: document.getElementById('edit-shop-name').value,
+                desc: document.getElementById('edit-shop-desc').value,
+                line: document.getElementById('edit-shop-line').value,
+                ig: document.getElementById('edit-shop-ig').value,
+                coverImage: document.getElementById('edit-shop-cover').value,
+                updateNote: document.getElementById('edit-shop-update-note').value,
+                updateImage: document.getElementById('edit-shop-update-img').value,
+                steps: [
+                    document.getElementById('edit-step-1').value,
+                    document.getElementById('edit-step-2').value,
+                    document.getElementById('edit-step-3').value
+                ]
+            };
+            try {
+                await q(sb.from('shop_settings').upsert({
+                    id: 1, name: shop.name, description: shop.desc, line_url: shop.line, ig_url: shop.ig,
+                    cover_image: shop.coverImage, update_note: shop.updateNote, update_image: shop.updateImage, steps: shop.steps
+                }));
+                state.shop = shop;
+                renderApp(); showToast('บันทึกข้อมูลร้านแล้ว 🤍');
+            } catch (e) { fail(e); }
         }
 
         window.openAppModal = function(id) {
@@ -718,92 +808,97 @@
             document.getElementById('modal-app-packages').appendChild(row);
         };
 
-        window.saveAppModal = function() {
-            const name = document.getElementById('modal-app-name').value; 
+        window.saveAppModal = async function() {
+            const name = document.getElementById('modal-app-name').value;
             if(!name) { showToast('กรุณาใส่ชื่อแอปด้วยนะคะ'); return; }
-            
+
             const id = document.getElementById('modal-app-id').value;
+            const category = (document.getElementById('modal-app-cat').value || 'ทั่วไป').trim();
+            const img = document.getElementById('modal-app-img').value;
             const packages = [];
             document.querySelectorAll('.pkg-row').forEach(row => {
                 const i = row.querySelectorAll('input');
-                if(i[0].value && i[2].value) packages.push({ name: i[0].value, duration: i[1].value, price: parseInt(i[2].value) });
+                if(i[0].value && i[2].value) packages.push({ name: i[0].value, duration: i[1].value, price: Number(i[2].value) });
             });
-            
-            const newApp = { 
-                id: id ? parseInt(id) : Date.now(), 
-                name, 
-                category: document.getElementById('modal-app-cat').value || "ทั่วไป", 
-                img: document.getElementById('modal-app-img').value, 
-                packages 
-            };
-            
-            if (id) state.apps = state.apps.map(a => a.id == id ? newApp : a);
-            else { state.apps.push(newApp); if(!state.categories.includes(newApp.category)) state.categories.push(newApp.category); }
-            
-            closeAppModal(); renderApp(); showToast('บันทึกแอปเรียบร้อย ✨');
-        };
-        window.deleteApp = id => { state.apps = state.apps.filter(a => a.id !== id); renderApp(); showToast('ลบแอปแล้วค่ะ'); };
 
-        window.handleCoverImgUpload = function(e) {
-            const file = e.target.files[0]; if(!file) return;
-            const r = new FileReader(); r.onload = e => {
-                const img = new Image(); img.onload = () => {
-                    const canvas = document.createElement('canvas'); const MAX = 900; let w = img.width, h = img.height;
-                    if(w>h && w>MAX){h*=MAX/w;w=MAX;}else if(h>MAX){w*=MAX/h;h=MAX;}
-                    canvas.width = w; canvas.height = h; canvas.getContext('2d').drawImage(img,0,0,w,h);
-                    const b64 = canvas.toDataURL('image/jpeg', 0.85);
-                    document.getElementById('edit-shop-cover').value = b64;
-                    document.getElementById('edit-shop-cover-preview').src = b64;
-                }; img.src = e.target.result;
-            }; r.readAsDataURL(file);
-            e.target.value = ''; // เคลียร์ค่าให้อัปโหลดซ้ำไฟล์เดิมได้
+            try {
+                // หมวดหมู่: สร้างถ้ายังไม่มี
+                let cat = await q(sb.from('categories').select('id').eq('name', category).maybeSingle());
+                if (!cat) {
+                    cat = await q(sb.from('categories').insert({ name: category, sort_order: state.categories.length }).select('id').single());
+                }
+                let appId;
+                if (id) {
+                    appId = parseInt(id);
+                    await q(sb.from('apps').update({ name, category_id: cat.id, img }).eq('id', appId));
+                    await q(sb.from('packages').delete().eq('app_id', appId));
+                } else {
+                    const maxOrder = state.apps.length + 1;
+                    const row = await q(sb.from('apps').insert({ name, category_id: cat.id, img, sort_order: maxOrder }).select('id').single());
+                    appId = row.id;
+                }
+                if (packages.length) {
+                    await q(sb.from('packages').insert(packages.map((p, i) => ({ ...p, app_id: appId, sort_order: i + 1 }))));
+                }
+                closeAppModal();
+                await loadAll();
+                showToast('บันทึกแอปเรียบร้อย ✨');
+            } catch (e) { fail(e); }
+        };
+        window.deleteApp = async id => {
+            try { await q(sb.from('apps').delete().eq('id', id)); await loadAll(); showToast('ลบแอปแล้วค่ะ'); }
+            catch (e) { fail(e); }
         };
 
-        window.handleAppImgUpload = function(e) {
+        window.handleCoverImgUpload = async function(e) {
             const file = e.target.files[0]; if(!file) return;
-            const r = new FileReader(); r.onload = e => {
-                const img = new Image(); img.onload = () => {
-                    const canvas = document.createElement('canvas'); const MAX = 200; let w = img.width, h = img.height;
-                    if(w>h && w>MAX){h*=MAX/w;w=MAX;}else if(h>MAX){w*=MAX/h;h=MAX;}
-                    canvas.width = w; canvas.height = h; canvas.getContext('2d').drawImage(img,0,0,w,h);
-                    const b64 = canvas.toDataURL('image/png');
-                    document.getElementById('modal-app-img').value = b64;
-                    document.getElementById('modal-app-img-preview').src = b64;
-                    document.getElementById('modal-app-img-preview').classList.remove('hidden');
-                    document.getElementById('modal-app-img-placeholder').classList.add('hidden');
-                }; img.src = e.target.result;
-            }; r.readAsDataURL(file);
             e.target.value = '';
+            try {
+                showToast('กำลังอัปโหลดรูป...');
+                const url = await uploadResized(file, 'cover', 900, 'image/jpeg', 0.85);
+                document.getElementById('edit-shop-cover').value = url;
+                document.getElementById('edit-shop-cover-preview').src = url;
+            } catch (err) { fail(err); }
         };
 
-        window.handleUpdateImgUpload = function(e) {
+        window.handleAppImgUpload = async function(e) {
             const file = e.target.files[0]; if(!file) return;
-            const r = new FileReader(); r.onload = e => {
-                const img = new Image(); img.onload = () => {
-                    const canvas = document.createElement('canvas'); const MAX = 300; let w = img.width, h = img.height;
-                    if(w>h && w>MAX){h*=MAX/w;w=MAX;}else if(h>MAX){w*=MAX/h;h=MAX;}
-                    canvas.width = w; canvas.height = h; canvas.getContext('2d').drawImage(img,0,0,w,h);
-                    const b64 = canvas.toDataURL('image/png');
-                    document.getElementById('edit-shop-update-img').value = b64;
-                    document.getElementById('edit-shop-update-img-preview').src = b64;
-                }; img.src = e.target.result;
-            }; r.readAsDataURL(file);
             e.target.value = '';
+            try {
+                showToast('กำลังอัปโหลดรูป...');
+                const url = await uploadResized(file, 'apps', 200, 'image/png');
+                document.getElementById('modal-app-img').value = url;
+                document.getElementById('modal-app-img-preview').src = url;
+                document.getElementById('modal-app-img-preview').classList.remove('hidden');
+                document.getElementById('modal-app-img-placeholder').classList.add('hidden');
+            } catch (err) { fail(err); }
         };
 
-        window.handleUploadReview = function(e) {
+        window.handleUpdateImgUpload = async function(e) {
             const file = e.target.files[0]; if(!file) return;
-            const r = new FileReader(); r.onload = e => {
-                const img = new Image(); img.onload = () => {
-                    const canvas = document.createElement('canvas'); const MAX = 600; let w = img.width, h = img.height;
-                    if(w>h && w>MAX){h*=MAX/w;w=MAX;}else if(h>MAX){w*=MAX/h;h=MAX;}
-                    canvas.width = w; canvas.height = h; canvas.getContext('2d').drawImage(img,0,0,w,h);
-                    state.reviews.unshift({ id: 'r'+Date.now(), img: canvas.toDataURL('image/jpeg', 0.8) });
-                    renderApp(); showToast('อัปโหลดรูปรีวิวแล้ว 📸');
-                }; img.src = e.target.result;
-            }; r.readAsDataURL(file); e.target.value = '';
+            e.target.value = '';
+            try {
+                showToast('กำลังอัปโหลดรูป...');
+                const url = await uploadResized(file, 'notes', 300, 'image/png');
+                document.getElementById('edit-shop-update-img').value = url;
+                document.getElementById('edit-shop-update-img-preview').src = url;
+            } catch (err) { fail(err); }
         };
-        window.deleteReview = id => { state.reviews = state.reviews.filter(r => r.id !== id); renderApp(); showToast('ลบรูปรีวิวแล้วค่ะ'); };
+
+        window.handleUploadReview = async function(e) {
+            const file = e.target.files[0]; if(!file) return;
+            e.target.value = '';
+            try {
+                showToast('กำลังอัปโหลดรูป...');
+                const url = await uploadResized(file, 'reviews', 600, 'image/jpeg', 0.8);
+                await q(sb.from('reviews').insert({ img: url }));
+                await loadAll(); showToast('อัปโหลดรูปรีวิวแล้ว 📸');
+            } catch (err) { fail(err); }
+        };
+        window.deleteReview = async id => {
+            try { await q(sb.from('reviews').delete().eq('id', id)); await loadAll(); showToast('ลบรูปรีวิวแล้วค่ะ'); }
+            catch (e) { fail(e); }
+        };
 
         window.openFaqModal = function(id) {
             if(id) {
@@ -817,18 +912,24 @@
             document.getElementById('modal-faq').classList.add('active');
         };
         window.closeFaqModal = () => document.getElementById('modal-faq').classList.remove('active');
-        window.saveFaqModal = function() {
-            const id = document.getElementById('modal-faq-id').value, q = document.getElementById('modal-faq-q').value; 
-            if(!q) return;
-            const data = { id: id ? parseInt(id) : Date.now(), q, a: document.getElementById('modal-faq-a').value };
-            if(id) state.faqs = state.faqs.map(x => x.id == id ? data : x); else state.faqs.push(data);
-            closeFaqModal(); renderApp(); showToast('บันทึก FAQ แล้ว ❓');
+        window.saveFaqModal = async function() {
+            const id = document.getElementById('modal-faq-id').value, question = document.getElementById('modal-faq-q').value;
+            if(!question) return;
+            const answer = document.getElementById('modal-faq-a').value;
+            try {
+                if (id) await q(sb.from('faqs').update({ question, answer }).eq('id', parseInt(id)));
+                else await q(sb.from('faqs').insert({ question, answer, sort_order: state.faqs.length + 1 }));
+                closeFaqModal(); await loadAll(); showToast('บันทึก FAQ แล้ว ❓');
+            } catch (e) { fail(e); }
         };
-        window.deleteFaq = id => { state.faqs = state.faqs.filter(x => x.id !== id); renderApp(); showToast('ลบ FAQ แล้วค่ะ'); };
+        window.deleteFaq = async id => {
+            try { await q(sb.from('faqs').delete().eq('id', id)); await loadAll(); showToast('ลบ FAQ แล้วค่ะ'); }
+            catch (e) { fail(e); }
+        };
 
         // ค้นหารูปจาก ID แทนการพ่น Base64 ลงใน HTML ตรงๆ เพื่อป้องกันเบราว์เซอร์หน่วงและ Error
         window.openImageViewerById = function(id) {
-            const review = state.reviews.find(x => x.id === id);
+            const review = state.reviews.find(x => String(x.id) === String(id));
             if (review && review.img) {
                 document.getElementById('viewer-image').src = review.img;
                 document.getElementById('modal-image-viewer').classList.add('active');
@@ -844,10 +945,14 @@
             if(link && link.getAttribute('href') === '#') e.preventDefault();
         });
 
-        window.addEventListener('DOMContentLoaded', () => { 
+        window.addEventListener('DOMContentLoaded', async () => { 
             document.querySelector('.nav-btn[data-target="home"]').classList.add('bg-softPink', 'text-white', 'shadow-sm');
             document.querySelector('.nav-btn[data-target="home"]').classList.remove('text-textMuted', 'hover:bg-cloudBg');
-            renderApp(); 
+            renderApp();
+            await loadAll();
+            // กู้คืนเซสชันแอดมิน (ถ้าเคยล็อกอินไว้)
+            const { data: { session } } = await sb.auth.getSession();
+            if (session) { const { data: ok } = await sb.rpc('is_admin'); if (ok) state.isAdminAuth = true; }
         });
     </script>
 </body>
