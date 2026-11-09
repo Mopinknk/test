@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Mew Mew | แคตตาล็อกสินค้า</title>
+    <title></title>
+    <meta name="robots" content="noindex, nofollow">
     
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
@@ -55,6 +56,7 @@
     </style>
 </head>
 <body class="pb-24">
+    <template id="app-tpl">
 
     <main class="w-full max-w-md md:max-w-3xl lg:max-w-5xl mx-auto px-5 pt-8 relative z-10 pb-10">
 
@@ -378,7 +380,11 @@
         <img id="viewer-image" src="" class="max-w-full max-h-[85vh] object-contain rounded-[2rem] shadow-2xl relative z-[111]" onclick="event.stopPropagation()">
     </div>
 
+</template>
     <script>
+        // ใส่เนื้อหาหน้าเว็บด้วย JS เพื่อไม่ให้ตัวสร้างพรีวิวลิงก์ (LINE ฯลฯ) อ่านข้อความได้
+        document.title = "Mew Mew | แคตตาล็อกสินค้า";
+        (function(){ const t = document.getElementById("app-tpl"); document.body.insertBefore(t.content, t); })();
         // --- State ---
         const state = {
             shop: { 
@@ -655,9 +661,10 @@
             const password = document.getElementById('admin-password').value;
             if (!email || !password) { showToast('กรอกอีเมลและรหัสผ่านก่อนนะคะ'); return; }
             const { error } = await sb.auth.signInWithPassword({ email, password });
-            if (error) { showToast('อีเมลหรือรหัสผ่านไม่ถูกต้อง'); return; }
-            const { data: ok } = await sb.rpc('is_admin');
-            if (!ok) { await sb.auth.signOut(); showToast('บัญชีนี้ไม่มีสิทธิ์แอดมิน'); return; }
+            if (error) { console.error(error); showToast('ล็อกอินไม่ได้: ' + error.message); return; }
+            const { data: ok, error: rpcErr } = await sb.rpc('is_admin');
+            if (rpcErr) { console.error(rpcErr); await sb.auth.signOut(); showToast('เรียก is_admin ไม่ได้ (ยังไม่ได้รัน schema.sql?): ' + rpcErr.message); return; }
+            if (!ok) { const { data: u } = await sb.auth.getUser(); await sb.auth.signOut(); showToast('บัญชีนี้ยังไม่อยู่ใน admin_users (user id: ' + (u && u.user ? u.user.id : '?') + ')'); return; }
             enterAdmin();
             document.getElementById('admin-password').value = '';
             showToast('เข้าสู่ระบบสำเร็จ 🤍');
